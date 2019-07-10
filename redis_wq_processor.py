@@ -55,15 +55,19 @@ class RedisWQ(object):
 class RedisWQProcessor(object):
   def __init__(self, queue_name, service_name, master_group_name, port=6379, sentinel_port=26379):
     self._current_job = None
-    master_host, slave_host = self.get_redis_instances(host_name, master_group_name)
-    self.Q = RedisWQ(name=queue_name, host=master_host)
-    self.slave_Q = RedisWQ(name=queue_name, host=slave_host)
+    self._host_name = host_name
+    self._queue_name = queue_name
+    self.open_client()
   def get_redis_instances(self, redis_service, master_group_name):
     sentinel = Sentinel([(redis_service, sentinel_port)], socket_timeout=0.1)
     master_host, master_port = sentinel.discover_master(master_group_name)
     slaves = sentinel.discover_slaves(master_group_name)
     slave_host, slave_port = random.choice(slaves)
     return master_host, slave_host
+  def open_client(self):
+    master_host, slave_host = self.get_redis_instances(self._host_name)
+    self.Q = RedisWQ(name=self._queue_name, host=master_host)
+    self.slave_Q = RedisWQ(name=self._queue_name, host=slave_host)
   def isEmpty(self):
     max_retries = 3
     num_tries = 0
@@ -73,14 +77,20 @@ class RedisWQProcessor(object):
       except Exception:
         num_tries += 1
   def getJob(self):
-    try:
-      job = self.Q.lease(lease_secs=60, block=True)
-      if job is not None:
-        return job
-      else:
-        return None
-    except Exception:
-      return None
+    max_retries = 3
+    num_tries = 0
+    while num_tries < max_retries:
+      try:
+        job = self.Q.lease(lease_secs=60, block=True)
+        if job is not None:
+          return job
+        else:
+          return None
+      except Exception:
+        num_tries += 1
+    del self.Q
+    del self.slave_Q
+    self.open_client()
   def releaseJob(self):
     max_retries = 3
     num_tries = 0
